@@ -930,6 +930,78 @@ where
         Ok(())
     }
 
+    fn prepare_segmented_transfer_without_start(
+        &mut self,
+        descriptors: &mut [DmaDescriptor],
+        circular: bool,
+        peri: DmaPeripheral,
+        data_segments: impl Iterator<Item = (*const u8, usize)>,
+    ) -> Result<(), DmaError> {
+        descriptors.fill(DmaDescriptor::EMPTY);
+
+        compiler_fence(core::sync::atomic::Ordering::SeqCst);
+
+        let mut descr = 0;
+
+        let mut peekable_segments = data_segments.peekable();
+        loop {
+            if let Some((data, len)) = peekable_segments.next() {
+                let mut processed = 0;
+                loop {
+                    let chunk_size = usize::min(CHUNK_SIZE, len - processed);
+                    let last_in_segment = processed + chunk_size >= len;
+                    let last_overall = last_in_segment && peekable_segments.peek().is_some();
+
+                    let next = if last_overall {
+                        if circular {
+                            addr_of_mut!(descriptors[0])
+                        } else {
+                            core::ptr::null_mut()
+                        }
+                    } else {
+                        addr_of_mut!(descriptors[descr + 1])
+                    };
+
+                    // buffer flags
+                    let dw0 = descriptors
+                        .get_mut(descr)
+                        .ok_or(DmaError::OutOfDescriptors)?;
+
+                    // The `suc_eof` bit doesn't affect the transfer itself, but signals when the
+                    // hardware should trigger an interrupt request. In circular mode,
+                    // we set the `suc_eof` bit for every buffer we send. We use this for
+                    // I2S to track progress of a transfer by checking OUTLINK_DSCR_ADDR.
+                    dw0.set_suc_eof(circular || last_in_segment);
+                    dw0.set_owner(Owner::Dma);
+                    dw0.set_size(chunk_size); // align to 32 bits?
+                    dw0.set_length(chunk_size); // the hardware will transmit this many bytes
+
+                    // pointer to current data
+                    dw0.buffer = unsafe { data.cast_mut().add(processed) };
+
+                    // pointer to next descriptor
+                    dw0.next = next;
+
+                    if last_in_segment {
+                        break;
+                    }
+
+                    processed += chunk_size;
+                    descr += 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        R::clear_out_interrupts();
+        R::reset_out();
+        R::set_out_descriptors(addr_of_mut!(descriptors[0]) as u32);
+        R::set_out_peripheral(peri as u8);
+
+        Ok(())
+    }
+
     fn start_transfer(&mut self) -> Result<(), DmaError> {
         R::start_out();
 
