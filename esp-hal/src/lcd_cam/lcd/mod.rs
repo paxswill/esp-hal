@@ -9,7 +9,8 @@ use crate::{peripheral::PeripheralRef, peripherals::LCD_CAM};
 pub mod i8080;
 
 pub struct Lcd<'d> {
-    pub(crate) lcd_cam: PeripheralRef<'d, LCD_CAM>,
+    // NOTE: (WILL) This shouldn't be made completely public :/
+    pub lcd_cam: PeripheralRef<'d, LCD_CAM>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
